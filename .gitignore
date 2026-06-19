@@ -1,0 +1,7 @@
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local tooling (preview server, launch config) -- not part of the app
+.claude/
