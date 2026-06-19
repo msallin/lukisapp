@@ -16,10 +16,15 @@ Once GitHub Pages is enabled (see below): https://msallin.github.io/lukisapp/
 
 ## Use
 
-- Fill in the fields and tap **Save**. The save time is recorded automatically.
-- **Export** builds a CSV of every entry. On a phone it opens the share sheet,
-  so you can send it straight to Mail, WhatsApp, etc. On desktop it downloads.
-- **Clear** deletes all entries (it asks first).
+The app has two tabs:
+
+- **Log** -- fill in the fields and tap **Save**. The save time is recorded
+  automatically.
+- **All** -- the full list of entries. Tap the pencil to edit one (the form
+  reopens pre-filled and keeps the original save time) or the cross to delete it.
+  **Export** builds a CSV of every entry; on a phone it opens the share sheet
+  (Mail, WhatsApp, ...), on desktop it downloads. **Clear** removes everything
+  (it asks first).
 
 ## Change what gets logged
 

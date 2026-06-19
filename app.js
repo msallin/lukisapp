@@ -1,12 +1,13 @@
 /**
  * Lukis -- offline data logging PWA.
  *
- * Single-page app: it renders a form from the FIELDS config below, stores each
- * entry (plus an automatic timestamp) in IndexedDB on the device, and exports
- * everything as a CSV that opens cleanly in Excel. No server, works offline.
+ * Single-page app with two views: "Log" (a form that creates and edits entries)
+ * and "All" (the full list, each row editable or deletable, plus CSV export).
+ * Entries (with an automatic timestamp) live in IndexedDB on the device, and the
+ * CSV export opens cleanly in Excel. No server, works offline.
  *
- * To change what gets logged, edit FIELDS -- the form inputs and the CSV
- * columns are both derived from it. Nothing else needs to change.
+ * To change what gets logged, edit FIELDS -- the form inputs and the CSV columns
+ * are both derived from it. Nothing else needs to change.
  */
 
 "use strict";
@@ -36,11 +37,13 @@ const APP_NAME = "Lukis";
 const DB_NAME = "lukis";
 const STORE = "entries";
 const TIMESTAMP_LABEL = "Saved at";
-const MAX_VISIBLE = 25; // recent list is capped for readability; export covers everything
 
 // de-CH/de-DE Excel expects a comma as the decimal separator (paired with the
 // ";" column separator below). Set to "." if the target Excel uses English settings.
 const CSV_DECIMAL = ",";
+
+// The id of the entry currently being edited, or null when creating a new one.
+let editingId = null;
 
 /* ------------------------------- IndexedDB ------------------------------- */
 // A small promise wrapper over a single "entries" object store keyed by id.
@@ -70,6 +73,24 @@ async function dbAdd(entry) {
   return new Promise((resolve, reject) => {
     const req = store(db, "readwrite").add(entry);
     req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbPut(entry) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const req = store(db, "readwrite").put(entry);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbGet(id) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const req = store(db, "readonly").get(id);
+    req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
@@ -159,6 +180,14 @@ function formatNumber(n) {
   return CSV_DECIMAL === "." ? String(n) : String(n).replace(".", CSV_DECIMAL);
 }
 
+// Human-readable value for the list, mirroring the CSV formatting.
+function formatValue(f, v) {
+  if (v === null || v === undefined || v === "") return "";
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  if (typeof v === "number") return formatNumber(v);
+  return String(v);
+}
+
 function exportFilename() {
   const d = new Date();
   const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
@@ -193,11 +222,26 @@ function renderForm() {
   form.innerHTML = "";
   for (const f of FIELDS) form.appendChild(renderField(f));
 
+  const actions = document.createElement("div");
+  actions.className = "form-actions";
+
   const submit = document.createElement("button");
   submit.type = "submit";
+  submit.id = "submit-btn";
   submit.className = "btn btn-primary";
   submit.textContent = "Save";
-  form.appendChild(submit);
+
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.id = "cancel-btn";
+  cancel.className = "btn btn-ghost";
+  cancel.textContent = "Cancel";
+  cancel.hidden = true;
+  cancel.addEventListener("click", cancelEdit);
+
+  actions.appendChild(submit);
+  actions.appendChild(cancel);
+  form.appendChild(actions);
   applyDefaults(form);
 }
 
@@ -267,32 +311,59 @@ function renderField(f) {
   return wrap;
 }
 
-function collectEntry(form) {
-  const entry = { id: newId(), savedAt: new Date().toISOString() };
+// Reads the field values out of the form (without id/savedAt, which are managed
+// separately so an edit can preserve the original timestamp).
+function collectValues(form) {
+  const values = {};
   for (const f of FIELDS) {
     const el = form.elements[f.key];
-    if (f.type === "checkbox") {
-      entry[f.key] = el.checked;
-    } else if (f.type === "number") {
-      entry[f.key] = el.value === "" ? null : Number(el.value);
-    } else {
-      entry[f.key] = el.value;
-    }
+    if (f.type === "checkbox") values[f.key] = el.checked;
+    else if (f.type === "number") values[f.key] = el.value === "" ? null : Number(el.value);
+    else values[f.key] = el.value;
   }
-  return entry;
+  return values;
 }
 
-/* ---------------------------- Recent entries ----------------------------- */
-
-// Headline for a list row: the first non-empty field value, else the timestamp.
-function summaryOf(entry) {
+function loadEntryIntoForm(form, entry) {
   for (const f of FIELDS) {
-    const v = entry[f.key];
-    if (v !== null && v !== undefined && v !== "" && v !== false) {
-      return typeof v === "boolean" ? f.label : String(v);
-    }
+    const el = form.elements[f.key];
+    if (!el) continue;
+    if (f.type === "checkbox") el.checked = !!entry[f.key];
+    else el.value = entry[f.key] ?? "";
   }
-  return formatTimestamp(entry.savedAt);
+}
+
+function setFormMode(mode) {
+  document.getElementById("submit-btn").textContent = mode === "edit" ? "Update" : "Save";
+  document.getElementById("cancel-btn").hidden = mode !== "edit";
+}
+
+/* --------------------------------- Views --------------------------------- */
+
+function setView(view) {
+  document.getElementById("view-log").hidden = view !== "log";
+  document.getElementById("view-all").hidden = view !== "all";
+  for (const tab of document.querySelectorAll(".tab")) {
+    tab.classList.toggle("is-active", tab.dataset.view === view);
+  }
+  window.scrollTo(0, 0);
+}
+
+// Headline for a list row: the first field's value, falling back to the
+// timestamp if it is empty.
+function summaryHeadline(entry) {
+  return formatValue(FIELDS[0], entry[FIELDS[0].key]) || formatTimestamp(entry.savedAt);
+}
+
+// Secondary line: the remaining non-empty fields as "Label value", joined by
+// dots. Falls back to the save time so the row is never bare.
+function summaryDetail(entry) {
+  const parts = [];
+  for (const f of FIELDS.slice(1)) {
+    const v = formatValue(f, entry[f.key]);
+    if (v !== "") parts.push(`${f.label} ${v}`);
+  }
+  return parts.join(" · ") || formatTimestamp(entry.savedAt);
 }
 
 async function refresh() {
@@ -306,26 +377,14 @@ async function refresh() {
   }
   entries.sort((a, b) => (a.savedAt < b.savedAt ? 1 : -1)); // newest first
 
-  const countEl = document.getElementById("count");
-  countEl.textContent = entries.length
+  document.getElementById("count").textContent = entries.length
     ? `${entries.length} ${entries.length === 1 ? "entry" : "entries"}`
     : "";
 
-  const list = document.getElementById("recent-list");
-  const emptyNote = document.getElementById("empty-note");
+  const list = document.getElementById("entry-list");
   list.innerHTML = "";
-  emptyNote.style.display = entries.length ? "none" : "block";
-
-  for (const entry of entries.slice(0, MAX_VISIBLE)) {
-    list.appendChild(renderEntry(entry));
-  }
-  if (entries.length > MAX_VISIBLE) {
-    const more = document.createElement("li");
-    more.className = "muted";
-    more.style.padding = "12px 0 0";
-    more.textContent = `+ ${entries.length - MAX_VISIBLE} more — all included when you export`;
-    list.appendChild(more);
-  }
+  document.getElementById("empty-note").style.display = entries.length ? "none" : "block";
+  for (const entry of entries) list.appendChild(renderEntry(entry));
 }
 
 function renderEntry(entry) {
@@ -336,12 +395,22 @@ function renderEntry(entry) {
   main.className = "entry-main";
   const summary = document.createElement("div");
   summary.className = "entry-summary";
-  summary.textContent = summaryOf(entry);
-  const time = document.createElement("div");
-  time.className = "entry-time";
-  time.textContent = formatTimestamp(entry.savedAt);
+  summary.textContent = summaryHeadline(entry);
+  const detail = document.createElement("div");
+  detail.className = "entry-detail";
+  detail.textContent = summaryDetail(entry);
   main.appendChild(summary);
-  main.appendChild(time);
+  main.appendChild(detail);
+
+  const actions = document.createElement("div");
+  actions.className = "entry-actions";
+
+  const edit = document.createElement("button");
+  edit.className = "entry-edit";
+  edit.type = "button";
+  edit.setAttribute("aria-label", "Edit entry");
+  edit.textContent = "✎";
+  edit.addEventListener("click", () => startEdit(entry.id));
 
   const del = document.createElement("button");
   del.className = "entry-del";
@@ -350,8 +419,11 @@ function renderEntry(entry) {
   del.textContent = "×";
   del.addEventListener("click", () => onDelete(entry.id));
 
+  actions.appendChild(edit);
+  actions.appendChild(del);
+
   li.appendChild(main);
-  li.appendChild(del);
+  li.appendChild(actions);
   return li;
 }
 
@@ -360,20 +432,61 @@ function renderEntry(entry) {
 async function onSubmit(event) {
   event.preventDefault(); // native validation has already passed at this point
   const form = event.target;
-  const entry = collectEntry(form);
+  const values = collectValues(form);
+
   try {
-    await dbAdd(entry);
+    if (editingId) {
+      // Preserve the original id and creation timestamp; only the values change.
+      const existing = (await dbGet(editingId)) || { id: editingId, savedAt: new Date().toISOString() };
+      await dbPut({ ...existing, ...values });
+    } else {
+      await dbAdd({ id: newId(), savedAt: new Date().toISOString(), ...values });
+    }
   } catch (err) {
     console.error("Failed to save entry", err);
     toast("Could not save. Storage error.");
     return;
   }
+
+  const wasEditing = editingId !== null;
+  editingId = null;
+  setFormMode("create");
   form.reset();
-  applyDefaults(form); // restore the "today" date for the next entry
-  const first = form.querySelector("input, select, textarea");
-  if (first) first.focus(); // ready for the next entry
-  toast("Saved");
+  applyDefaults(form);
   await refresh();
+
+  if (wasEditing) {
+    toast("Updated");
+    setView("all");
+  } else {
+    toast("Saved");
+    const first = form.querySelector("input, select, textarea");
+    if (first) first.focus(); // ready for the next entry
+  }
+}
+
+async function startEdit(id) {
+  const entry = await dbGet(id);
+  if (!entry) {
+    toast("Entry no longer exists.");
+    await refresh();
+    return;
+  }
+  editingId = id;
+  const form = document.getElementById("entry-form");
+  form.reset();
+  loadEntryIntoForm(form, entry);
+  setFormMode("edit");
+  setView("log");
+}
+
+function cancelEdit() {
+  editingId = null;
+  const form = document.getElementById("entry-form");
+  form.reset();
+  applyDefaults(form);
+  setFormMode("create");
+  setView("all");
 }
 
 async function onDelete(id) {
@@ -384,6 +497,7 @@ async function onDelete(id) {
     toast("Could not delete.");
     return;
   }
+  if (editingId === id) cancelEdit(); // the open edit target is gone
   await refresh();
 }
 
@@ -401,6 +515,7 @@ async function onClear() {
     toast("Could not clear.");
     return;
   }
+  if (editingId) cancelEdit();
   toast("All entries deleted");
   await refresh();
 }
@@ -482,6 +597,10 @@ async function init() {
   document.getElementById("entry-form").addEventListener("submit", onSubmit);
   document.getElementById("export-btn").addEventListener("click", onExport);
   document.getElementById("clear-btn").addEventListener("click", onClear);
+  for (const tab of document.querySelectorAll(".tab")) {
+    tab.addEventListener("click", () => setView(tab.dataset.view));
+  }
+  setView("log");
 
   // Ask the browser to keep our data, reducing the chance of automatic eviction.
   if (navigator.storage && navigator.storage.persist) {
