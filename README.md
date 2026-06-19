@@ -25,7 +25,18 @@ Once GitHub Pages is enabled (see below): https://msallin.github.io/lukisapp/
 
 Edit the `FIELDS` array at the top of [`app.js`](app.js). Each entry there is
 one form field and one CSV column. Supported types: `text`, `number`,
-`textarea`, `select` (with `options`), `date`, `checkbox`. Nothing else changes.
+`textarea`, `select` (with `options`), `date`, `checkbox`. A `date` field can
+default to the current day with `default: "today"`.
+
+After changing the fields (or any cached file), bump `CACHE` in [`sw.js`](sw.js)
+-- e.g. `lukis-v2` -> `lukis-v3` -- so already-installed devices fetch the new
+version instead of serving the cached old one.
+
+## CSV format
+
+Export uses `;` as the column separator and a comma decimal (`42,5`), with a
+UTF-8 BOM, which de-CH/de-DE Excel opens cleanly. For English Excel, set
+`CSV_DECIMAL = "."` near the top of [`app.js`](app.js).
 
 ## Where the data lives
 

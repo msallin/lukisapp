@@ -21,14 +21,15 @@
  *   options     (select only) array of choices
  *   min/max/step (number only, optional) passed through to the input
  *   placeholder (optional) hint text
- *
- * These are examples -- replace them with the fields you actually want to log.
+ *   default     (optional) initial value; the token "today" fills a date field
+ *               with the current date (re-applied after each save)
  */
 const FIELDS = [
-  { key: "title",    label: "Title",    type: "text",     required: true, placeholder: "What is this entry?" },
-  { key: "category", label: "Category", type: "select",   required: true, options: ["Work", "Personal", "Other"] },
-  { key: "amount",   label: "Amount",   type: "number",   step: "any", placeholder: "0" },
-  { key: "note",     label: "Note",     type: "textarea", placeholder: "Optional details" },
+  { key: "datum",  label: "Datum",   type: "date",   required: true, default: "today" },
+  { key: "vkpi",   label: "VKPI",    type: "number", step: "any" },
+  { key: "pgi",    label: "PGI",     type: "number", step: "any" },
+  { key: "daPki",  label: "DA PKI",  type: "number", step: "any" },
+  { key: "daVkpi", label: "DA VKPI", type: "number", step: "any" },
 ];
 
 const APP_NAME = "Lukis";
@@ -36,6 +37,10 @@ const DB_NAME = "lukis";
 const STORE = "entries";
 const TIMESTAMP_LABEL = "Saved at";
 const MAX_VISIBLE = 25; // recent list is capped for readability; export covers everything
+
+// de-CH/de-DE Excel expects a comma as the decimal separator (paired with the
+// ";" column separator below). Set to "." if the target Excel uses English settings.
+const CSV_DECIMAL = ",";
 
 /* ------------------------------- IndexedDB ------------------------------- */
 // A small promise wrapper over a single "entries" object store keyed by id.
@@ -120,6 +125,7 @@ function buildCsv(entries) {
     for (const f of FIELDS) {
       let v = entry[f.key];
       if (typeof v === "boolean") v = v ? "yes" : "no";
+      else if (typeof v === "number") v = formatNumber(v);
       row.push(v);
     }
     rows.push(row);
@@ -141,6 +147,18 @@ function formatTimestamp(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// Local "YYYY-MM-DD" for today, used as the default for "today" date fields.
+function todayISODate() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Formats a number for the CSV using CSV_DECIMAL, e.g. 42.5 -> "42,5" for
+// de-CH Excel. Integers have no separator and are returned unchanged.
+function formatNumber(n) {
+  return CSV_DECIMAL === "." ? String(n) : String(n).replace(".", CSV_DECIMAL);
+}
+
 function exportFilename() {
   const d = new Date();
   const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
@@ -154,6 +172,22 @@ function newId() {
 
 /* ----------------------------- Form rendering ---------------------------- */
 
+function defaultValueFor(f) {
+  return f.default === "today" ? todayISODate() : f.default;
+}
+
+// (Re)applies configured field defaults. Run on first render and after each
+// save, so a "today" date stays current even if the app is left open for days.
+function applyDefaults(form) {
+  for (const f of FIELDS) {
+    if (f.default === undefined) continue;
+    const el = form.elements[f.key];
+    if (!el) continue;
+    if (f.type === "checkbox") el.checked = !!f.default;
+    else el.value = defaultValueFor(f);
+  }
+}
+
 function renderForm() {
   const form = document.getElementById("entry-form");
   form.innerHTML = "";
@@ -164,6 +198,7 @@ function renderForm() {
   submit.className = "btn btn-primary";
   submit.textContent = "Save";
   form.appendChild(submit);
+  applyDefaults(form);
 }
 
 function renderField(f) {
@@ -334,6 +369,7 @@ async function onSubmit(event) {
     return;
   }
   form.reset();
+  applyDefaults(form); // restore the "today" date for the next entry
   const first = form.querySelector("input, select, textarea");
   if (first) first.focus(); // ready for the next entry
   toast("Saved");

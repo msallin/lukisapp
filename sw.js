@@ -5,7 +5,7 @@
 
 "use strict";
 
-const CACHE = "lukis-v1";
+const CACHE = "lukis-v2";
 const ASSETS = [
   "./",
   "./index.html",
