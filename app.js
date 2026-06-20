@@ -54,6 +54,8 @@ let currentUser = null;
 let entriesCache = []; // latest snapshot of the signed-in user's bookings
 let entriesUnsub = null; // active Firestore listener teardown
 let editingId = null; // id of the booking being edited, or null
+const expandedDates = new Set(); // which All-view day groups are expanded
+let expandInitialized = false; // default-expand today only on the first render
 
 function entriesCol(uid) {
   return collection(db, "users", uid, "entries");
@@ -357,24 +359,72 @@ function renderEntries(entries) {
   list.innerHTML = "";
   document.getElementById("empty-note").style.display = sorted.length ? "none" : "block";
 
-  // Sorted newest-first, so same-day bookings are consecutive: emit a date
-  // header whenever the day changes, then a compact one-line row per booking.
-  let currentDate = null;
+  // Group consecutive same-day bookings (already sorted newest-first).
+  const groups = [];
+  let current = null;
   for (const entry of sorted) {
     const date = formatDate(entry.savedAt);
-    if (date !== currentDate) {
-      currentDate = date;
-      list.appendChild(renderDateHeader(date));
+    if (!current || current.date !== date) {
+      current = { date, entries: [] };
+      groups.push(current);
     }
-    list.appendChild(renderEntryRow(entry));
+    current.entries.push(entry);
   }
+
+  // On the first render, expand only today's group; the rest start collapsed.
+  if (!expandInitialized) {
+    expandedDates.add(formatDate(new Date().toISOString()));
+    expandInitialized = true;
+  }
+
+  for (const group of groups) list.appendChild(renderDateGroup(group));
 }
 
-function renderDateHeader(date) {
+// One collapsible day: a header (date + booking count, tap to toggle) and its
+// rows. Expanded state lives in expandedDates so it survives re-renders when a
+// new booking syncs in.
+function renderDateGroup(group) {
+  const expanded = expandedDates.has(group.date);
+
   const li = document.createElement("li");
-  li.className = "date-header";
-  li.textContent = date;
+  li.className = "date-group";
+
+  const header = document.createElement("button");
+  header.type = "button";
+  header.className = "date-header";
+  header.setAttribute("aria-expanded", expanded ? "true" : "false");
+
+  const caret = document.createElement("span");
+  caret.className = "date-caret";
+  caret.textContent = "▾";
+
+  const label = document.createElement("span");
+  label.className = "date-label";
+  label.textContent = group.date;
+
+  const count = document.createElement("span");
+  count.className = "date-count";
+  count.textContent = group.entries.length;
+
+  header.append(caret, label, count);
+
+  const rows = document.createElement("ul");
+  rows.className = "date-rows";
+  rows.hidden = !expanded;
+  for (const entry of group.entries) rows.appendChild(renderEntryRow(entry));
+
+  header.addEventListener("click", () => toggleDate(group.date, header, rows));
+
+  li.append(header, rows);
   return li;
+}
+
+function toggleDate(date, header, rows) {
+  const willExpand = rows.hidden;
+  rows.hidden = !willExpand;
+  header.setAttribute("aria-expanded", willExpand ? "true" : "false");
+  if (willExpand) expandedDates.add(date);
+  else expandedDates.delete(date);
 }
 
 function renderEntryRow(entry) {

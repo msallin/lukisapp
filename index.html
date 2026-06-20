@@ -86,8 +86,18 @@
     .list-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
     .recent-actions { display:flex; gap:8px; }
     .recent-list { list-style:none; margin:0; padding:0; }
-    .date-header { font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; padding:16px 0 4px; }
-    .date-header:first-child { padding-top:2px; }
+    .date-group { list-style:none; }
+    .date-header {
+      display:flex; align-items:center; gap:8px; width:100%;
+      background:none; border:none; cursor:pointer; font-family:inherit; text-align:left;
+      font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;
+      padding:16px 0 6px;
+    }
+    .date-group:first-child .date-header { padding-top:2px; }
+    .date-caret { font-size:9px; transition:transform .15s; }
+    .date-header[aria-expanded="false"] .date-caret { transform:rotate(-90deg); }
+    .date-count { margin-left:auto; font-variant-numeric:tabular-nums; }
+    .date-rows { list-style:none; margin:0; padding:0; }
     .entry-row { display:flex; align-items:center; gap:10px; padding:8px 0; }
     .entry-row + .entry-row { border-top:1px solid var(--border); }
     .entry-row .time { color:var(--muted); font-size:13px; font-variant-numeric:tabular-nums; flex:none; }
