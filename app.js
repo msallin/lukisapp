@@ -1,125 +1,165 @@
 /**
- * Lukis -- offline data logging PWA.
+ * Lukis -- flight-booking logger PWA with cloud sync.
  *
- * Single-page app with two views: "Log" (a form that creates and edits entries)
- * and "All" (the full list, each row editable or deletable, plus CSV export).
- * Entries (with an automatic timestamp) live in IndexedDB on the device, and the
- * CSV export opens cleanly in Excel. No server, works offline.
+ * Two views: "Log" (tap one of the category buttons to book it now, with an
+ * optional remark) and "All" (the full list, each row editable or deletable,
+ * plus CSV export). Each booking is { category, remark, savedAt } and lives in
+ * Firebase Firestore under the signed-in user, with offline persistence on, so
+ * the app keeps working with no network and syncs when it returns. Sign-in is a
+ * passwordless email link. The CSV export opens cleanly in Excel.
  *
- * To change what gets logged, edit FIELDS -- the form inputs and the CSV columns
- * are both derived from it. Nothing else needs to change.
+ * To change the booking categories, edit CATEGORIES -- the buttons and the edit
+ * dropdown are both derived from it.
  */
 
-"use strict";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.3.1/firebase-app.js";
+import {
+  getAuth,
+  onAuthStateChanged,
+  sendSignInLinkToEmail,
+  isSignInWithEmailLink,
+  signInWithEmailLink,
+  signOut,
+} from "https://www.gstatic.com/firebasejs/11.3.1/firebase-auth.js";
+import {
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  collection,
+  doc,
+  setDoc,
+  deleteDoc,
+  onSnapshot,
+} from "https://www.gstatic.com/firebasejs/11.3.1/firebase-firestore.js";
+import { firebaseConfig } from "./firebase-config.js";
 
-/**
- * Field definitions. Each entry becomes one form input and one CSV column.
- *
- *   key         unique id; used as the stored property name and column key
- *   label       shown above the input and as the CSV header
- *   type        "text" | "number" | "textarea" | "select" | "date" | "checkbox"
- *   required    (optional) blocks saving until filled
- *   options     (select only) array of choices
- *   min/max/step (number only, optional) passed through to the input
- *   placeholder (optional) hint text
- *   default     (optional) initial value; the token "today" fills a date field
- *               with the current date (re-applied after each save)
- */
-const FIELDS = [
-  { key: "datum",  label: "Datum",   type: "date",   required: true, default: "today" },
-  { key: "vkpi",   label: "VKPI",    type: "number", step: "any" },
-  { key: "pgi",    label: "PGI",     type: "number", step: "any" },
-  { key: "daPki",  label: "DA PKI",  type: "number", step: "any" },
-  { key: "daVkpi", label: "DA VKPI", type: "number", step: "any" },
-];
+// The four flight categories. Each becomes a quick-book button and an option in
+// the edit dropdown. Add or rename here to change them everywhere.
+const CATEGORIES = ["PGI", "VKPI", "DA PGI", "DA VKPI"];
 
 const APP_NAME = "Lukis";
-const DB_NAME = "lukis";
-const STORE = "entries";
-const TIMESTAMP_LABEL = "Saved at";
+const EMAIL_KEY = "lukis:emailForSignIn";
 
-// de-CH/de-DE Excel expects a comma as the decimal separator (paired with the
-// ";" column separator below). Set to "." if the target Excel uses English settings.
-const CSV_DECIMAL = ",";
+/* -------------------------------- Firebase ------------------------------- */
 
-// The id of the entry currently being edited, or null when creating a new one.
-let editingId = null;
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+// persistentLocalCache keeps an IndexedDB copy so reads/writes work offline and
+// sync when the connection returns.
+const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+});
 
-/* ------------------------------- IndexedDB ------------------------------- */
-// A small promise wrapper over a single "entries" object store keyed by id.
-// Written by hand rather than pulling in a library: it is only a few calls and
-// keeps the app dependency-free and fully offline.
+let currentUser = null;
+let entriesCache = []; // latest snapshot of the signed-in user's bookings
+let entriesUnsub = null; // active Firestore listener teardown
+let editingId = null; // id of the booking being edited, or null
 
-function openDb() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        db.createObjectStore(STORE, { keyPath: "id" });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+function entriesCol(uid) {
+  return collection(db, "users", uid, "entries");
 }
 
-function store(db, mode) {
-  return db.transaction(STORE, mode).objectStore(STORE);
+async function saveEntry(uid, entry) {
+  // The entry id is the document id, so create and edit are the same operation.
+  await setDoc(doc(entriesCol(uid), entry.id), entry);
 }
 
-async function dbAdd(entry) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const req = store(db, "readwrite").add(entry);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+async function deleteEntry(uid, id) {
+  await deleteDoc(doc(entriesCol(uid), id));
 }
 
-async function dbPut(entry) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const req = store(db, "readwrite").put(entry);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+// Subscribes to the user's bookings. onSnapshot fires immediately from the local
+// cache and again on every remote change, so the UI stays live without manual
+// refreshes.
+function subscribeEntries(uid) {
+  unsubscribeEntries();
+  entriesUnsub = onSnapshot(
+    entriesCol(uid),
+    (snap) => {
+      entriesCache = snap.docs.map((d) => d.data());
+      renderEntries(entriesCache);
+    },
+    (err) => {
+      console.error("Entries listener failed", err);
+      toast("Sync error.");
+    }
+  );
 }
 
-async function dbGet(id) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const req = store(db, "readonly").get(id);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+function unsubscribeEntries() {
+  if (entriesUnsub) {
+    entriesUnsub();
+    entriesUnsub = null;
+  }
+  entriesCache = [];
+  renderEntries(entriesCache);
 }
 
-async function dbAll() {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const req = store(db, "readonly").getAll();
-    req.onsuccess = () => resolve(req.result || []);
-    req.onerror = () => reject(req.error);
-  });
+/* ---------------------------------- Auth --------------------------------- */
+
+function actionCodeSettings() {
+  // The link returns to this exact app URL; its domain must be in the Firebase
+  // console's authorized domains. handleCodeInApp is required for email links.
+  return { url: location.origin + location.pathname, handleCodeInApp: true };
 }
 
-async function dbDelete(id) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const req = store(db, "readwrite").delete(id);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+async function onSendLink(event) {
+  event.preventDefault();
+  const email = document.getElementById("signin-email").value.trim();
+  if (!email) return;
+  const btn = document.getElementById("signin-btn");
+  btn.disabled = true;
+  try {
+    await sendSignInLinkToEmail(auth, email, actionCodeSettings());
+    // Remember the address so we can complete sign-in when the link is opened.
+    localStorage.setItem(EMAIL_KEY, email);
+    setAuthStatus(`Link sent to ${email}. Open it on this phone to finish signing in.`);
+  } catch (err) {
+    console.error("Failed to send sign-in link", err);
+    setAuthStatus("Could not send the link. Check the address and try again.");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
-async function dbClear() {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const req = store(db, "readwrite").clear();
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+// If the page was opened from a sign-in link, complete the sign-in.
+async function completeEmailLinkIfPresent() {
+  if (!isSignInWithEmailLink(auth, location.href)) return;
+  let email = localStorage.getItem(EMAIL_KEY);
+  if (!email) email = window.prompt("Confirm your email to finish signing in:");
+  if (!email) return;
+  try {
+    await signInWithEmailLink(auth, email, location.href);
+    localStorage.removeItem(EMAIL_KEY);
+    // Strip the one-time link parameters from the URL.
+    history.replaceState(null, "", location.origin + location.pathname);
+  } catch (err) {
+    console.error("Email-link sign-in failed", err);
+    setAuthStatus("That sign-in link was invalid or expired. Request a new one.");
+  }
+}
+
+async function onSignOut() {
+  try {
+    await signOut(auth);
+  } catch (err) {
+    console.error("Sign-out failed", err);
+  }
+}
+
+function setAuthStatus(message) {
+  document.getElementById("signin-status").textContent = message;
+}
+
+function handleAuthState(user) {
+  currentUser = user;
+  if (user) {
+    showApp(user);
+    subscribeEntries(user.uid);
+  } else {
+    unsubscribeEntries();
+    showAuthView();
+  }
 }
 
 /* ---------------------------------- CSV ---------------------------------- */
@@ -137,19 +177,11 @@ function csvCell(value) {
   return s;
 }
 
-// Builds the full CSV text for every entry. Columns: timestamp first, then one
-// per field in FIELDS order. Booleans render as yes/no for readability.
+// Builds the CSV: one row per booking, columns timestamp / category / remark.
 function buildCsv(entries) {
-  const rows = [[TIMESTAMP_LABEL, ...FIELDS.map((f) => f.label)]];
-  for (const entry of entries) {
-    const row = [formatTimestamp(entry.savedAt)];
-    for (const f of FIELDS) {
-      let v = entry[f.key];
-      if (typeof v === "boolean") v = v ? "yes" : "no";
-      else if (typeof v === "number") v = formatNumber(v);
-      row.push(v);
-    }
-    rows.push(row);
+  const rows = [["Saved at", "Category", "Remark"]];
+  for (const e of entries) {
+    rows.push([formatTimestamp(e.savedAt), e.category || "", e.remark || ""]);
   }
   // Lead with a UTF-8 BOM and use CRLF line endings -- that combination is what
   // Excel opens most reliably (correct encoding and one row per line).
@@ -168,26 +200,6 @@ function formatTimestamp(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// Local "YYYY-MM-DD" for today, used as the default for "today" date fields.
-function todayISODate() {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-// Formats a number for the CSV using CSV_DECIMAL, e.g. 42.5 -> "42,5" for
-// de-CH Excel. Integers have no separator and are returned unchanged.
-function formatNumber(n) {
-  return CSV_DECIMAL === "." ? String(n) : String(n).replace(".", CSV_DECIMAL);
-}
-
-// Human-readable value for the list, mirroring the CSV formatting.
-function formatValue(f, v) {
-  if (v === null || v === undefined || v === "") return "";
-  if (typeof v === "boolean") return v ? "yes" : "no";
-  if (typeof v === "number") return formatNumber(v);
-  return String(v);
-}
-
 function exportFilename() {
   const d = new Date();
   const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
@@ -199,148 +211,134 @@ function newId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
-/* ----------------------------- Form rendering ---------------------------- */
+/* ----------------------------- Log view (book) --------------------------- */
 
-function defaultValueFor(f) {
-  return f.default === "today" ? todayISODate() : f.default;
-}
-
-// (Re)applies configured field defaults. Run on first render and after each
-// save, so a "today" date stays current even if the app is left open for days.
-function applyDefaults(form) {
-  for (const f of FIELDS) {
-    if (f.default === undefined) continue;
-    const el = form.elements[f.key];
-    if (!el) continue;
-    if (f.type === "checkbox") el.checked = !!f.default;
-    else el.value = defaultValueFor(f);
+function renderCategoryButtons() {
+  const grid = document.getElementById("cat-grid");
+  grid.innerHTML = "";
+  for (const category of CATEGORIES) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "cat-btn";
+    btn.textContent = category;
+    btn.addEventListener("click", () => bookCategory(category));
+    grid.appendChild(btn);
   }
 }
 
-function renderForm() {
-  const form = document.getElementById("entry-form");
-  form.innerHTML = "";
-  for (const f of FIELDS) form.appendChild(renderField(f));
-
-  const actions = document.createElement("div");
-  actions.className = "form-actions";
-
-  const submit = document.createElement("button");
-  submit.type = "submit";
-  submit.id = "submit-btn";
-  submit.className = "btn btn-primary";
-  submit.textContent = "Save";
-
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.id = "cancel-btn";
-  cancel.className = "btn btn-ghost";
-  cancel.textContent = "Cancel";
-  cancel.hidden = true;
-  cancel.addEventListener("click", cancelEdit);
-
-  actions.appendChild(submit);
-  actions.appendChild(cancel);
-  form.appendChild(actions);
-  applyDefaults(form);
-}
-
-function renderField(f) {
-  const wrap = document.createElement("div");
-  wrap.className = "field" + (f.type === "checkbox" ? " checkbox" : "");
-  const id = "f-" + f.key;
-
-  const label = document.createElement("label");
-  label.htmlFor = id;
-  label.textContent = f.label;
-  if (f.required) {
-    const star = document.createElement("span");
-    star.className = "req";
-    star.textContent = "*";
-    label.appendChild(star);
-  }
-
-  let input;
-  switch (f.type) {
-    case "textarea":
-      input = document.createElement("textarea");
-      break;
-    case "select":
-      input = document.createElement("select");
-      // Empty placeholder so nothing is preselected; "required" forces a choice.
-      const placeholder = document.createElement("option");
-      placeholder.value = "";
-      placeholder.textContent = "Select…";
-      placeholder.disabled = !!f.required;
-      placeholder.selected = true;
-      input.appendChild(placeholder);
-      for (const opt of f.options || []) {
-        const o = document.createElement("option");
-        o.value = opt;
-        o.textContent = opt;
-        input.appendChild(o);
-      }
-      break;
-    case "checkbox":
-      input = document.createElement("input");
-      input.type = "checkbox";
-      break;
-    default:
-      input = document.createElement("input");
-      input.type = f.type; // text | number | date
-      if (f.step !== undefined) input.step = f.step;
-      if (f.min !== undefined) input.min = f.min;
-      if (f.max !== undefined) input.max = f.max;
-  }
-
-  input.id = id;
-  input.name = f.key;
-  if (f.required) input.required = true;
-  if (f.placeholder && f.type !== "select" && f.type !== "checkbox") {
-    input.placeholder = f.placeholder;
-  }
-
-  // Checkbox reads better with the box before its label.
-  if (f.type === "checkbox") {
-    wrap.appendChild(input);
-    wrap.appendChild(label);
-  } else {
-    wrap.appendChild(label);
-    wrap.appendChild(input);
-  }
-  return wrap;
-}
-
-// Reads the field values out of the form (without id/savedAt, which are managed
-// separately so an edit can preserve the original timestamp).
-function collectValues(form) {
-  const values = {};
-  for (const f of FIELDS) {
-    const el = form.elements[f.key];
-    if (f.type === "checkbox") values[f.key] = el.checked;
-    else if (f.type === "number") values[f.key] = el.value === "" ? null : Number(el.value);
-    else values[f.key] = el.value;
-  }
-  return values;
-}
-
-function loadEntryIntoForm(form, entry) {
-  for (const f of FIELDS) {
-    const el = form.elements[f.key];
-    if (!el) continue;
-    if (f.type === "checkbox") el.checked = !!entry[f.key];
-    else el.value = entry[f.key] ?? "";
+function renderCategoryOptions() {
+  const select = document.getElementById("edit-category");
+  select.innerHTML = "";
+  for (const category of CATEGORIES) {
+    const option = document.createElement("option");
+    option.value = category;
+    option.textContent = category;
+    select.appendChild(option);
   }
 }
 
-function setFormMode(mode) {
-  document.getElementById("submit-btn").textContent = mode === "edit" ? "Update" : "Save";
-  document.getElementById("cancel-btn").hidden = mode !== "edit";
+// One-tap booking: records the chosen category now, with the current remark.
+async function bookCategory(category) {
+  if (!currentUser) return;
+  const remarkEl = document.getElementById("remark");
+  const entry = {
+    id: newId(),
+    savedAt: new Date().toISOString(),
+    category,
+    remark: remarkEl.value.trim(),
+  };
+  try {
+    await saveEntry(currentUser.uid, entry);
+  } catch (err) {
+    console.error("Failed to save booking", err);
+    toast("Could not save.");
+    return;
+  }
+  remarkEl.value = ""; // the remark is per-booking; clear it for the next one
+  toast(`${category} booked`);
+}
+
+/* ----------------------------- Edit a booking ---------------------------- */
+
+function startEdit(id) {
+  const entry = entriesCache.find((e) => e.id === id);
+  if (!entry) {
+    toast("Entry no longer exists.");
+    return;
+  }
+  editingId = id;
+  document.getElementById("edit-category").value = entry.category;
+  document.getElementById("edit-remark").value = entry.remark || "";
+  showEditCard();
+  setView("log");
+}
+
+async function onEditSubmit(event) {
+  event.preventDefault();
+  if (!currentUser || !editingId) return;
+  // Preserve the original id and booking time; only category/remark change.
+  const existing = entriesCache.find((e) => e.id === editingId) || {
+    id: editingId,
+    savedAt: new Date().toISOString(),
+  };
+  const updated = {
+    ...existing,
+    category: document.getElementById("edit-category").value,
+    remark: document.getElementById("edit-remark").value.trim(),
+  };
+  try {
+    await saveEntry(currentUser.uid, updated);
+  } catch (err) {
+    console.error("Failed to update booking", err);
+    toast("Could not save.");
+    return;
+  }
+  editingId = null;
+  showQuickBook();
+  toast("Updated");
+  setView("all");
+}
+
+function cancelEdit() {
+  editingId = null;
+  showQuickBook();
+  setView("all");
 }
 
 /* --------------------------------- Views --------------------------------- */
 
+function hideAllViews() {
+  for (const id of ["view-loading", "view-auth", "view-log", "view-all"]) {
+    document.getElementById(id).hidden = true;
+  }
+}
+
+function showAuthView() {
+  hideAllViews();
+  document.getElementById("tabs").hidden = true;
+  document.getElementById("view-auth").hidden = false;
+}
+
+function showApp(user) {
+  document.getElementById("tabs").hidden = false;
+  document.getElementById("account-email").textContent = user.email || "";
+  showQuickBook();
+  setView("log");
+}
+
+function showQuickBook() {
+  document.getElementById("quickbook").hidden = false;
+  document.getElementById("editcard").hidden = true;
+}
+
+function showEditCard() {
+  document.getElementById("quickbook").hidden = true;
+  document.getElementById("editcard").hidden = false;
+}
+
 function setView(view) {
+  document.getElementById("view-loading").hidden = true;
+  document.getElementById("view-auth").hidden = true;
   document.getElementById("view-log").hidden = view !== "log";
   document.getElementById("view-all").hidden = view !== "all";
   for (const tab of document.querySelectorAll(".tab")) {
@@ -349,42 +347,17 @@ function setView(view) {
   window.scrollTo(0, 0);
 }
 
-// Headline for a list row: the first field's value, falling back to the
-// timestamp if it is empty.
-function summaryHeadline(entry) {
-  return formatValue(FIELDS[0], entry[FIELDS[0].key]) || formatTimestamp(entry.savedAt);
-}
+function renderEntries(entries) {
+  const sorted = [...entries].sort((a, b) => (a.savedAt < b.savedAt ? 1 : -1)); // newest first
 
-// Secondary line: the remaining non-empty fields as "Label value", joined by
-// dots. Falls back to the save time so the row is never bare.
-function summaryDetail(entry) {
-  const parts = [];
-  for (const f of FIELDS.slice(1)) {
-    const v = formatValue(f, entry[f.key]);
-    if (v !== "") parts.push(`${f.label} ${v}`);
-  }
-  return parts.join(" · ") || formatTimestamp(entry.savedAt);
-}
-
-async function refresh() {
-  let entries;
-  try {
-    entries = await dbAll();
-  } catch (err) {
-    console.error("Failed to read entries", err);
-    toast("Could not load entries.");
-    return;
-  }
-  entries.sort((a, b) => (a.savedAt < b.savedAt ? 1 : -1)); // newest first
-
-  document.getElementById("count").textContent = entries.length
-    ? `${entries.length} ${entries.length === 1 ? "entry" : "entries"}`
+  document.getElementById("count").textContent = sorted.length
+    ? `${sorted.length} ${sorted.length === 1 ? "booking" : "bookings"}`
     : "";
 
   const list = document.getElementById("entry-list");
   list.innerHTML = "";
-  document.getElementById("empty-note").style.display = entries.length ? "none" : "block";
-  for (const entry of entries) list.appendChild(renderEntry(entry));
+  document.getElementById("empty-note").style.display = sorted.length ? "none" : "block";
+  for (const entry of sorted) list.appendChild(renderEntry(entry));
 }
 
 function renderEntry(entry) {
@@ -395,10 +368,10 @@ function renderEntry(entry) {
   main.className = "entry-main";
   const summary = document.createElement("div");
   summary.className = "entry-summary";
-  summary.textContent = summaryHeadline(entry);
+  summary.textContent = entry.category || "—";
   const detail = document.createElement("div");
   detail.className = "entry-detail";
-  detail.textContent = summaryDetail(entry);
+  detail.textContent = formatTimestamp(entry.savedAt) + (entry.remark ? " · " + entry.remark : "");
   main.appendChild(summary);
   main.appendChild(detail);
 
@@ -408,14 +381,14 @@ function renderEntry(entry) {
   const edit = document.createElement("button");
   edit.className = "entry-edit";
   edit.type = "button";
-  edit.setAttribute("aria-label", "Edit entry");
+  edit.setAttribute("aria-label", "Edit booking");
   edit.textContent = "✎";
   edit.addEventListener("click", () => startEdit(entry.id));
 
   const del = document.createElement("button");
   del.className = "entry-del";
   del.type = "button";
-  del.setAttribute("aria-label", "Delete entry");
+  del.setAttribute("aria-label", "Delete booking");
   del.textContent = "×";
   del.addEventListener("click", () => onDelete(entry.id));
 
@@ -427,113 +400,44 @@ function renderEntry(entry) {
   return li;
 }
 
-/* -------------------------------- Actions -------------------------------- */
-
-async function onSubmit(event) {
-  event.preventDefault(); // native validation has already passed at this point
-  const form = event.target;
-  const values = collectValues(form);
-
-  try {
-    if (editingId) {
-      // Preserve the original id and creation timestamp; only the values change.
-      const existing = (await dbGet(editingId)) || { id: editingId, savedAt: new Date().toISOString() };
-      await dbPut({ ...existing, ...values });
-    } else {
-      await dbAdd({ id: newId(), savedAt: new Date().toISOString(), ...values });
-    }
-  } catch (err) {
-    console.error("Failed to save entry", err);
-    toast("Could not save. Storage error.");
-    return;
-  }
-
-  const wasEditing = editingId !== null;
-  editingId = null;
-  setFormMode("create");
-  form.reset();
-  applyDefaults(form);
-  await refresh();
-
-  if (wasEditing) {
-    toast("Updated");
-    setView("all");
-  } else {
-    toast("Saved");
-    const first = form.querySelector("input, select, textarea");
-    if (first) first.focus(); // ready for the next entry
-  }
-}
-
-async function startEdit(id) {
-  const entry = await dbGet(id);
-  if (!entry) {
-    toast("Entry no longer exists.");
-    await refresh();
-    return;
-  }
-  editingId = id;
-  const form = document.getElementById("entry-form");
-  form.reset();
-  loadEntryIntoForm(form, entry);
-  setFormMode("edit");
-  setView("log");
-}
-
-function cancelEdit() {
-  editingId = null;
-  const form = document.getElementById("entry-form");
-  form.reset();
-  applyDefaults(form);
-  setFormMode("create");
-  setView("all");
-}
+/* ------------------------------ List actions ----------------------------- */
 
 async function onDelete(id) {
+  if (!currentUser) return;
   try {
-    await dbDelete(id);
+    await deleteEntry(currentUser.uid, id);
   } catch (err) {
-    console.error("Failed to delete entry", err);
+    console.error("Failed to delete booking", err);
     toast("Could not delete.");
     return;
   }
   if (editingId === id) cancelEdit(); // the open edit target is gone
-  await refresh();
 }
 
 async function onClear() {
-  const entries = await dbAll().catch(() => []);
-  if (!entries.length) {
+  if (!currentUser) return;
+  if (!entriesCache.length) {
     toast("Nothing to clear.");
     return;
   }
-  if (!confirm(`Delete all ${entries.length} entries? This cannot be undone.`)) return;
+  if (!confirm(`Delete all ${entriesCache.length} bookings? This cannot be undone.`)) return;
   try {
-    await dbClear();
+    await Promise.all(entriesCache.map((e) => deleteEntry(currentUser.uid, e.id)));
   } catch (err) {
-    console.error("Failed to clear entries", err);
+    console.error("Failed to clear bookings", err);
     toast("Could not clear.");
     return;
   }
   if (editingId) cancelEdit();
-  toast("All entries deleted");
-  await refresh();
+  toast("All bookings deleted");
 }
 
 async function onExport() {
-  let entries;
-  try {
-    entries = await dbAll();
-  } catch (err) {
-    console.error("Failed to read entries for export", err);
-    toast("Could not read entries.");
-    return;
-  }
-  if (!entries.length) {
+  if (!entriesCache.length) {
     toast("Nothing to export yet.");
     return;
   }
-  entries.sort((a, b) => (a.savedAt < b.savedAt ? -1 : 1)); // oldest first in the file
+  const entries = [...entriesCache].sort((a, b) => (a.savedAt < b.savedAt ? -1 : 1)); // oldest first
 
   const csv = buildCsv(entries);
   const filename = exportFilename();
@@ -578,29 +482,30 @@ function toast(message) {
 
 /* ---------------------------------- Init --------------------------------- */
 
-async function init() {
-  // Register the service worker first, before any await. init() is async, so an
-  // await here could yield long enough for the "load" event to fire before the
-  // listener is attached -- then it never runs and the app never caches for
-  // offline use. Registering up front (with a readyState fallback) avoids that
-  // race. Relative path so it works under the Pages project subpath (.../lukisapp/).
-  if ("serviceWorker" in navigator) {
-    const register = () =>
-      navigator.serviceWorker.register("sw.js").catch((err) => {
-        console.warn("Service worker registration failed", err);
-      });
-    if (document.readyState === "complete") register();
-    else window.addEventListener("load", register, { once: true });
-  }
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  const register = () =>
+    navigator.serviceWorker.register("sw.js").catch((err) => {
+      console.warn("Service worker registration failed", err);
+    });
+  if (document.readyState === "complete") register();
+  else window.addEventListener("load", register, { once: true });
+}
 
-  renderForm();
-  document.getElementById("entry-form").addEventListener("submit", onSubmit);
+async function init() {
+  registerServiceWorker();
+
+  renderCategoryButtons();
+  renderCategoryOptions();
+  document.getElementById("edit-form").addEventListener("submit", onEditSubmit);
+  document.getElementById("edit-cancel").addEventListener("click", cancelEdit);
   document.getElementById("export-btn").addEventListener("click", onExport);
   document.getElementById("clear-btn").addEventListener("click", onClear);
+  document.getElementById("signin-form").addEventListener("submit", onSendLink);
+  document.getElementById("signout-btn").addEventListener("click", onSignOut);
   for (const tab of document.querySelectorAll(".tab")) {
     tab.addEventListener("click", () => setView(tab.dataset.view));
   }
-  setView("log");
 
   // Ask the browser to keep our data, reducing the chance of automatic eviction.
   if (navigator.storage && navigator.storage.persist) {
@@ -611,7 +516,9 @@ async function init() {
     }
   }
 
-  await refresh();
+  // React to sign-in/out, then finish any pending email-link sign-in.
+  onAuthStateChanged(auth, handleAuthState);
+  await completeEmailLinkIfPresent();
 }
 
 init();

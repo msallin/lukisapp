@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Lukis</title>
-  <meta name="description" content="Offline data logging. Saved on your device, export to CSV.">
+  <meta name="description" content="Offline data logging with cloud sync. Export to CSV.">
 
   <!-- PWA -->
   <link rel="manifest" href="manifest.webmanifest">
@@ -49,6 +49,7 @@
     .container { max-width:560px; margin:0 auto; padding:16px 16px calc(24px + var(--safe-bottom)); }
     .view[hidden] { display:none; }
     .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px; margin-bottom:16px; }
+    .card-title { font-size:18px; margin:0 0 6px; }
     .field { margin-bottom:14px; }
     .field label { display:block; font-size:14px; font-weight:600; margin-bottom:6px; }
     .field .req { color:var(--danger); margin-left:2px; }
@@ -68,11 +69,18 @@
     .btn { font-size:16px; font-weight:600; border:none; border-radius:10px; padding:13px 16px; cursor:pointer; font-family:inherit; }
     .btn-primary { width:100%; background:var(--primary); color:#fff; min-height:50px; }
     .btn-primary:active { background:var(--primary-press); }
+    .btn-primary:disabled { opacity:.6; cursor:default; }
     .btn-secondary { background:#eef2ff; color:var(--primary); }
     .btn-ghost { background:transparent; color:var(--muted); }
     .btn-ghost-danger { background:transparent; color:var(--danger); }
+    .cat-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:8px; }
+    .cat-btn {
+      border:none; border-radius:12px; background:var(--primary); color:#fff;
+      font-size:18px; font-weight:700; font-family:inherit; padding:24px 12px; cursor:pointer;
+      min-height:88px; box-shadow:0 1px 2px rgba(0,0,0,.08);
+    }
+    .cat-btn:active { background:var(--primary-press); transform:translateY(1px); }
     .list-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
-    .list-head h2 { font-size:16px; margin:0; }
     .recent-actions { display:flex; gap:8px; }
     .recent-list { list-style:none; margin:0; padding:0; }
     .entry { display:flex; justify-content:space-between; gap:10px; padding:12px 0; border-top:1px solid var(--border); }
@@ -85,6 +93,8 @@
     .entry-edit:active { color:var(--primary); }
     .entry-del { background:none; border:none; color:var(--muted); font-size:22px; line-height:1; cursor:pointer; padding:2px 6px; }
     .entry-del:active { color:var(--danger); }
+    .account { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:14px; padding-top:14px; border-top:1px solid var(--border); }
+    .account .btn-ghost { width:auto; padding:8px 10px; }
     .muted { color:var(--muted); font-size:14px; }
     .toast {
       position:fixed; left:50%; bottom:calc(20px + var(--safe-bottom));
@@ -98,22 +108,67 @@
 <body>
   <header class="app-header">
     <h1>Lukis</h1>
-    <nav class="tabs" role="tablist">
+    <nav class="tabs" id="tabs" role="tablist" hidden>
       <button class="tab is-active" type="button" data-view="log" role="tab">Log</button>
       <button class="tab" type="button" data-view="all" role="tab">All</button>
     </nav>
   </header>
 
   <main class="container">
-    <!-- Log view: the entry form, reused for both creating and editing -->
-    <section id="view-log" class="view">
+    <!-- Shown until Firebase reports whether someone is signed in -->
+    <section id="view-loading" class="view">
+      <div class="card"><p class="muted">Loading…</p></div>
+    </section>
+
+    <!-- Sign-in: passwordless email link -->
+    <section id="view-auth" class="view" hidden>
       <div class="card">
-        <!-- Fields are rendered from the FIELDS config in app.js -->
-        <form id="entry-form"></form>
+        <h2 class="card-title">Sign in</h2>
+        <p class="muted">Enter your email and we'll send a one-tap sign-in link. No password.</p>
+        <form id="signin-form">
+          <div class="field">
+            <label for="signin-email">Email</label>
+            <input id="signin-email" name="email" type="email" required autocomplete="email" inputmode="email" placeholder="you@example.com">
+          </div>
+          <button type="submit" id="signin-btn" class="btn btn-primary">Send sign-in link</button>
+        </form>
+        <p id="signin-status" class="muted" aria-live="polite"></p>
       </div>
     </section>
 
-    <!-- All view: full list with per-entry edit and delete, plus export -->
+    <!-- Log view: tap a category to book it; edit an existing booking in place -->
+    <section id="view-log" class="view" hidden>
+      <!-- Quick booking: optional remark, then one tap on a category -->
+      <div class="card" id="quickbook">
+        <div class="field">
+          <label for="remark">Remark</label>
+          <input id="remark" type="text" autocomplete="off" placeholder="Optional, applied to the next booking">
+        </div>
+        <!-- Category buttons are rendered from CATEGORIES in app.js -->
+        <div class="cat-grid" id="cat-grid"></div>
+      </div>
+
+      <!-- Edit an existing booking -->
+      <div class="card" id="editcard" hidden>
+        <h2 class="card-title">Edit booking</h2>
+        <form id="edit-form">
+          <div class="field">
+            <label for="edit-category">Category</label>
+            <select id="edit-category"></select>
+          </div>
+          <div class="field">
+            <label for="edit-remark">Remark</label>
+            <input id="edit-remark" type="text" autocomplete="off">
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Update</button>
+            <button type="button" id="edit-cancel" class="btn btn-ghost">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- All view: full list with per-entry edit and delete, export, and account -->
     <section id="view-all" class="view" hidden>
       <div class="card">
         <div class="list-head">
@@ -125,12 +180,16 @@
         </div>
         <ul id="entry-list" class="recent-list"></ul>
         <p id="empty-note" class="muted">No entries yet.</p>
+        <div class="account">
+          <span id="account-email" class="muted"></span>
+          <button id="signout-btn" type="button" class="btn btn-ghost">Sign out</button>
+        </div>
       </div>
     </section>
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

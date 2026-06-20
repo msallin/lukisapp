@@ -1,69 +1,85 @@
 # Lukis
 
-A tiny offline app for logging data. It runs entirely in the browser, stores
-entries on the device, and exports everything to a CSV you can open in Excel or
-share by email. No account, no server; once installed it works with no internet.
+A tiny app for logging flight bookings. Tap one of four category buttons and the
+booking is recorded with a timestamp; add an optional remark. Bookings sync to
+Firebase Firestore under a passwordless email sign-in, and the app installs as a
+PWA that keeps working offline. Everything can be exported to a CSV for Excel.
 
 ## Live app
 
-Once GitHub Pages is enabled (see below): https://msallin.github.io/lukisapp/
+https://msallin.github.io/lukisapp/
 
 ## Install on a phone
 
-1. Open the link in the phone's browser (Safari on iOS, Chrome on Android).
-2. iOS: Share -> **Add to Home Screen**. Android: menu -> **Install app**.
+1. Open the link in the phone's browser (Chrome on Android, Safari on iOS).
+2. Android: menu -> **Install app**. iOS: Share -> **Add to Home Screen**.
 3. Launch it from the home-screen icon. It opens full-screen and works offline.
 
 ## Use
 
-The app has two tabs:
+Sign in once with your email (a one-tap link is sent; no password). Then:
 
-- **Log** -- fill in the fields and tap **Save**. The save time is recorded
-  automatically.
-- **All** -- the full list of entries. Tap the pencil to edit one (the form
-  reopens pre-filled and keeps the original save time) or the cross to delete it.
-  **Export** builds a CSV of every entry; on a phone it opens the share sheet
-  (Mail, WhatsApp, ...), on desktop it downloads. **Clear** removes everything
-  (it asks first).
+- **Log** -- optionally type a remark, then tap a category (**PGI**, **VKPI**,
+  **DA PGI**, **DA VKPI**). The booking is saved instantly with the current time.
+- **All** -- the full list. Tap the pencil to edit a booking (category/remark;
+  the original time is kept) or the cross to delete it. **Export** builds a CSV
+  of every booking; on a phone it opens the share sheet (Mail, WhatsApp, ...),
+  on desktop it downloads. **Clear** removes everything (it asks first).
 
-## Change what gets logged
+## Change the categories
 
-Edit the `FIELDS` array at the top of [`app.js`](app.js). Each entry there is
-one form field and one CSV column. Supported types: `text`, `number`,
-`textarea`, `select` (with `options`), `date`, `checkbox`. A `date` field can
-default to the current day with `default: "today"`.
-
-After changing the fields (or any cached file), bump `CACHE` in [`sw.js`](sw.js)
--- e.g. `lukis-v2` -> `lukis-v3` -- so already-installed devices fetch the new
-version instead of serving the cached old one.
+Edit the `CATEGORIES` array at the top of [`app.js`](app.js); the buttons and the
+edit dropdown both follow it. After changing any cached file, bump `CACHE` in
+[`sw.js`](sw.js) -- e.g. `lukis-v4` -> `lukis-v5` -- so installed devices fetch
+the new version instead of serving the cached old one.
 
 ## CSV format
 
-Export uses `;` as the column separator and a comma decimal (`42,5`), with a
-UTF-8 BOM, which de-CH/de-DE Excel opens cleanly. For English Excel, set
-`CSV_DECIMAL = "."` near the top of [`app.js`](app.js).
+Columns are `Saved at`, `Category`, `Remark`, separated by `;` with a UTF-8 BOM,
+which de-CH/de-DE Excel opens cleanly (correct encoding, one booking per row).
 
 ## Where the data lives
 
-Entries are stored locally in the browser (IndexedDB) and never leave the
-device. That means:
+Bookings are stored in Firebase Firestore under the signed-in account, with
+Firestore's offline cache enabled so the app works with no network and syncs when
+it returns. Security rules restrict each account to its own data. The CSV export
+is still useful as a portable backup.
 
-- Clearing the browser's site data, or deleting the installed app, erases the
-  entries. **Export regularly** -- the CSV is your backup.
-- The app asks the browser to keep the data (`navigator.storage.persist`),
-  which reduces, but does not entirely remove, the chance of eviction.
+## Firebase setup
+
+The web config lives in [`firebase-config.js`](firebase-config.js) (not secret;
+safe to commit). To point the app at a Firebase project:
+
+1. Create the project, add a **Web app**, and paste its config into
+   `firebase-config.js`.
+2. **Firestore**: create a database (Native mode).
+3. **Auth**: enable the **Email/Password** provider with **Email link
+   (passwordless sign-in)** turned on.
+4. **Auth -> Settings -> Authorized domains**: add `msallin.github.io`.
+5. **Firestore -> Rules**: publish
+
+   ```
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /users/{uid}/entries/{entryId} {
+         allow read, write: if request.auth != null && request.auth.uid == uid;
+       }
+     }
+   }
+   ```
 
 ## Deploy (GitHub Pages)
 
-1. Push these files to the `main` branch.
+1. Push to the `main` branch.
 2. Repo **Settings -> Pages -> Source: Deploy from a branch -> `main` / `/ (root)`**.
 3. Wait for the build, then open `https://<user>.github.io/lukisapp/`.
 
 All asset paths are relative on purpose, so the app works from that project
-subpath without any changes.
+subpath without changes.
 
 ## Icons
 
 The PNG icons are generated from a background colour and the letter "L" by
-[`make-icons.ps1`](make-icons.ps1) (Windows PowerShell). Re-run it after
-changing the colour or glyph.
+[`make-icons.ps1`](make-icons.ps1) (Windows PowerShell). Re-run it after changing
+the colour or glyph.
