@@ -199,6 +199,11 @@ function formatTime(iso) {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// Local value for an <input type="datetime-local">, e.g. "2026-06-20T14:30".
+function localDatetimeValue(d) {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function exportFilename() {
   const d = new Date();
   const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
@@ -236,13 +241,20 @@ function renderCategoryOptions() {
   }
 }
 
-// One-tap booking: records the chosen category now, with the current remark.
+// Sets the booking date/time field to now.
+function resetBookingDatetime() {
+  document.getElementById("book-datetime").value = localDatetimeValue(new Date());
+}
+
+// One-tap booking: records the chosen category at the (adjustable) date/time,
+// defaulting to now, with the current remark.
 async function bookCategory(category) {
   if (!currentUser) return;
   const remarkEl = document.getElementById("remark");
+  const dt = document.getElementById("book-datetime").value;
   const entry = {
     id: newId(),
-    savedAt: new Date().toISOString(),
+    savedAt: dt ? new Date(dt).toISOString() : new Date().toISOString(),
     category,
     remark: remarkEl.value.trim(),
     createdByUid: currentUser.uid,
@@ -256,6 +268,7 @@ async function bookCategory(category) {
     return;
   }
   remarkEl.value = ""; // the remark is per-booking; clear it for the next one
+  resetBookingDatetime(); // back to "now" for the next booking
   toast(`${category} booked`);
 }
 
@@ -268,6 +281,7 @@ function startEdit(id) {
     return;
   }
   editingId = id;
+  document.getElementById("edit-datetime").value = localDatetimeValue(new Date(entry.savedAt));
   document.getElementById("edit-category").value = entry.category;
   document.getElementById("edit-remark").value = entry.remark || "";
   showEditCard();
@@ -282,8 +296,10 @@ async function onEditSubmit(event) {
     id: editingId,
     savedAt: new Date().toISOString(),
   };
+  const dt = document.getElementById("edit-datetime").value;
   const updated = {
     ...existing,
+    savedAt: dt ? new Date(dt).toISOString() : existing.savedAt,
     category: document.getElementById("edit-category").value,
     remark: document.getElementById("edit-remark").value.trim(),
   };
@@ -330,6 +346,7 @@ function showApp(user) {
 function showQuickBook() {
   document.getElementById("quickbook").hidden = false;
   document.getElementById("editcard").hidden = true;
+  resetBookingDatetime(); // default the booking time to now whenever shown
 }
 
 function showEditCard() {

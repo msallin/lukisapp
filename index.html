@@ -149,6 +149,10 @@
       <!-- Quick booking: optional remark, then one tap on a category -->
       <div class="card" id="quickbook">
         <div class="field">
+          <label for="book-datetime">Date &amp; time</label>
+          <input id="book-datetime" type="datetime-local">
+        </div>
+        <div class="field">
           <label for="remark">Remark</label>
           <input id="remark" type="text" autocomplete="off" placeholder="Optional, applied to the next booking">
         </div>
@@ -160,6 +164,10 @@
       <div class="card" id="editcard" hidden>
         <h2 class="card-title">Edit booking</h2>
         <form id="edit-form">
+          <div class="field">
+            <label for="edit-datetime">Date &amp; time</label>
+            <input id="edit-datetime" type="datetime-local">
+          </div>
           <div class="field">
             <label for="edit-category">Category</label>
             <select id="edit-category"></select>
