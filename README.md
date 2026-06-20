@@ -17,7 +17,7 @@ https://msallin.github.io/lukisapp/
 
 ## Use
 
-Sign in once with your email (a one-tap link is sent; no password). Then:
+Sign in with your Google account. Then:
 
 - **Log** -- optionally type a remark, then tap a category (**PGI**, **VKPI**,
   **DA PGI**, **DA VKPI**). The booking is saved instantly with the current time.
@@ -29,9 +29,9 @@ Sign in once with your email (a one-tap link is sent; no password). Then:
 ## Change the categories
 
 Edit the `CATEGORIES` array at the top of [`app.js`](app.js); the buttons and the
-edit dropdown both follow it. After changing any cached file, bump `CACHE` in
-[`sw.js`](sw.js) -- e.g. `lukis-v4` -> `lukis-v5` -- so installed devices fetch
-the new version instead of serving the cached old one.
+edit dropdown both follow it. After changing any cached file, bump the `CACHE`
+version in [`sw.js`](sw.js) (e.g. `lukis-v6` -> `lukis-v7`) so installed devices
+fetch the new version instead of serving the cached old one.
 
 ## CSV format
 
@@ -53,8 +53,7 @@ safe to commit). To point the app at a Firebase project:
 1. Create the project, add a **Web app**, and paste its config into
    `firebase-config.js`.
 2. **Firestore**: create a database (Native mode).
-3. **Auth**: enable the **Email/Password** provider with **Email link
-   (passwordless sign-in)** turned on.
+3. **Auth**: enable the **Google** sign-in provider.
 4. **Auth -> Settings -> Authorized domains**: add `msallin.github.io`.
 5. **Firestore -> Rules**: publish
 

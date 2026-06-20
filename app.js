@@ -5,8 +5,8 @@
  * optional remark) and "All" (the full list, each row editable or deletable,
  * plus CSV export). Each booking is { category, remark, savedAt } and lives in
  * Firebase Firestore under the signed-in user, with offline persistence on, so
- * the app keeps working with no network and syncs when it returns. Sign-in is a
- * passwordless email link. The CSV export opens cleanly in Excel.
+ * the app keeps working with no network and syncs when it returns. Sign-in is
+ * Google. The CSV export opens cleanly in Excel.
  *
  * To change the booking categories, edit CATEGORIES -- the buttons and the edit
  * dropdown are both derived from it.
@@ -16,9 +16,10 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/11.3.1/firebas
 import {
   getAuth,
   onAuthStateChanged,
-  sendSignInLinkToEmail,
-  isSignInWithEmailLink,
-  signInWithEmailLink,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut,
 } from "https://www.gstatic.com/firebasejs/11.3.1/firebase-auth.js";
 import {
@@ -38,7 +39,6 @@ import { firebaseConfig } from "./firebase-config.js";
 const CATEGORIES = ["PGI", "VKPI", "DA PGI", "DA VKPI"];
 
 const APP_NAME = "Lukis";
-const EMAIL_KEY = "lukis:emailForSignIn";
 
 /* -------------------------------- Firebase ------------------------------- */
 
@@ -97,47 +97,30 @@ function unsubscribeEntries() {
 
 /* ---------------------------------- Auth --------------------------------- */
 
-function actionCodeSettings() {
-  // The link returns to this exact app URL; its domain must be in the Firebase
-  // console's authorized domains. handleCodeInApp is required for email links.
-  return { url: location.origin + location.pathname, handleCodeInApp: true };
-}
-
-async function onSendLink(event) {
-  event.preventDefault();
-  const email = document.getElementById("signin-email").value.trim();
-  if (!email) return;
-  const btn = document.getElementById("signin-btn");
+async function onGoogleSignIn() {
+  const provider = new GoogleAuthProvider();
+  const btn = document.getElementById("google-signin-btn");
   btn.disabled = true;
   try {
-    await sendSignInLinkToEmail(auth, email, actionCodeSettings());
-    // Remember the address so we can complete sign-in when the link is opened.
-    localStorage.setItem(EMAIL_KEY, email);
-    setAuthStatus(`Link sent to ${email}. Open it on this phone to finish signing in.`);
+    await signInWithPopup(auth, provider);
+    // Success is handled by onAuthStateChanged.
   } catch (err) {
-    console.error("Failed to send sign-in link", err);
-    const reason = err && err.code ? ` (${err.code})` : "";
-    setAuthStatus(`Could not send the link${reason}. Check the address and try again.`);
+    // Popups are often blocked in an installed PWA; fall back to a full-page
+    // redirect (its result is picked up by getRedirectResult on next load).
+    if (
+      err.code === "auth/popup-blocked" ||
+      err.code === "auth/cancelled-popup-request" ||
+      err.code === "auth/operation-not-supported-in-this-environment"
+    ) {
+      await signInWithRedirect(auth, provider);
+      return;
+    }
+    if (err.code !== "auth/popup-closed-by-user") {
+      console.error("Google sign-in failed", err);
+      setAuthStatus(`Sign-in failed (${err.code || "error"}).`);
+    }
   } finally {
     btn.disabled = false;
-  }
-}
-
-// If the page was opened from a sign-in link, complete the sign-in.
-async function completeEmailLinkIfPresent() {
-  if (!isSignInWithEmailLink(auth, location.href)) return;
-  let email = localStorage.getItem(EMAIL_KEY);
-  if (!email) email = window.prompt("Confirm your email to finish signing in:");
-  if (!email) return;
-  try {
-    await signInWithEmailLink(auth, email, location.href);
-    localStorage.removeItem(EMAIL_KEY);
-    // Strip the one-time link parameters from the URL.
-    history.replaceState(null, "", location.origin + location.pathname);
-  } catch (err) {
-    console.error("Email-link sign-in failed", err);
-    const reason = err && err.code ? ` (${err.code})` : "";
-    setAuthStatus(`Sign-in failed${reason}. Request a new link.`);
   }
 }
 
@@ -503,7 +486,7 @@ async function init() {
   document.getElementById("edit-cancel").addEventListener("click", cancelEdit);
   document.getElementById("export-btn").addEventListener("click", onExport);
   document.getElementById("clear-btn").addEventListener("click", onClear);
-  document.getElementById("signin-form").addEventListener("submit", onSendLink);
+  document.getElementById("google-signin-btn").addEventListener("click", onGoogleSignIn);
   document.getElementById("signout-btn").addEventListener("click", onSignOut);
   for (const tab of document.querySelectorAll(".tab")) {
     tab.addEventListener("click", () => setView(tab.dataset.view));
@@ -518,9 +501,12 @@ async function init() {
     }
   }
 
-  // React to sign-in/out, then finish any pending email-link sign-in.
+  // React to sign-in/out, and surface any error from a completed redirect.
   onAuthStateChanged(auth, handleAuthState);
-  await completeEmailLinkIfPresent();
+  getRedirectResult(auth).catch((err) => {
+    console.error("Redirect sign-in failed", err);
+    setAuthStatus(`Sign-in failed (${err.code || "error"}).`);
+  });
 }
 
 init();

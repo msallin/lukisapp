@@ -20,6 +20,9 @@
 
   <style>
     * { box-sizing: border-box; }
+    /* An author display rule (e.g. .tabs) otherwise wins over the UA [hidden]
+       rule, so the hidden attribute silently stops working. Make it stick. */
+    [hidden] { display: none !important; }
     :root {
       --bg:#f1f5f9; --surface:#fff; --text:#0f172a; --muted:#64748b;
       --primary:#2563eb; --primary-press:#1d4ed8; --danger:#dc2626;
@@ -120,18 +123,12 @@
       <div class="card"><p class="muted">Loading…</p></div>
     </section>
 
-    <!-- Sign-in: passwordless email link -->
+    <!-- Sign-in: Google -->
     <section id="view-auth" class="view" hidden>
       <div class="card">
         <h2 class="card-title">Sign in</h2>
-        <p class="muted">Enter your email and we'll send a one-tap sign-in link. No password.</p>
-        <form id="signin-form">
-          <div class="field">
-            <label for="signin-email">Email</label>
-            <input id="signin-email" name="email" type="email" required autocomplete="email" inputmode="email" placeholder="you@example.com">
-          </div>
-          <button type="submit" id="signin-btn" class="btn btn-primary">Send sign-in link</button>
-        </form>
+        <p class="muted">Sign in with your Google account to sync your bookings across devices.</p>
+        <button type="button" id="google-signin-btn" class="btn btn-primary">Sign in with Google</button>
         <p id="signin-status" class="muted" aria-live="polite"></p>
       </div>
     </section>
