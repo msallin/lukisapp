@@ -116,7 +116,8 @@ async function onSendLink(event) {
     setAuthStatus(`Link sent to ${email}. Open it on this phone to finish signing in.`);
   } catch (err) {
     console.error("Failed to send sign-in link", err);
-    setAuthStatus("Could not send the link. Check the address and try again.");
+    const reason = err && err.code ? ` (${err.code})` : "";
+    setAuthStatus(`Could not send the link${reason}. Check the address and try again.`);
   } finally {
     btn.disabled = false;
   }
@@ -135,7 +136,8 @@ async function completeEmailLinkIfPresent() {
     history.replaceState(null, "", location.origin + location.pathname);
   } catch (err) {
     console.error("Email-link sign-in failed", err);
-    setAuthStatus("That sign-in link was invalid or expired. Request a new one.");
+    const reason = err && err.code ? ` (${err.code})` : "";
+    setAuthStatus(`Sign-in failed${reason}. Request a new link.`);
   }
 }
 
