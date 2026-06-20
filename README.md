@@ -55,18 +55,20 @@ safe to commit). To point the app at a Firebase project:
 2. **Firestore**: create a database (Native mode).
 3. **Auth**: enable the **Google** sign-in provider.
 4. **Auth -> Settings -> Authorized domains**: add `msallin.github.io`.
-5. **Firestore -> Rules**: publish
+5. **Firestore -> Rules**: publish the rules from [`firestore.rules`](firestore.rules),
+   with the real allowed emails filled in (see "Restricting who can sign in").
 
-   ```
-   rules_version = '2';
-   service cloud.firestore {
-     match /databases/{database}/documents {
-       match /users/{uid}/entries/{entryId} {
-         allow read, write: if request.auth != null && request.auth.uid == uid;
-       }
-     }
-   }
-   ```
+## Restricting who can sign in
+
+Google sign-in authenticates any Google account, and Firebase has no built-in
+allow-list for it (that needs Identity Platform blocking functions). The simple,
+free approach is to enforce an allow-list in the security rules: list the
+permitted emails in [`firestore.rules`](firestore.rules) and publish. Anyone else
+can still press "Sign in with Google", but every read/write is denied, so the app
+does nothing for them and your data and storage stay untouched.
+
+Put the real emails only in the published rules, not in the committed file, so
+they are not exposed in the public repo.
 
 ## Deploy (GitHub Pages)
 

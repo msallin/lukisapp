@@ -1,11 +1,26 @@
 // Firestore security rules for Lukis.
-// Each signed-in user can read and write only their own bookings.
-// Publish these in the Firebase console (Firestore -> Rules) or via the CLI.
+//
+// Google sign-in lets ANY Google account authenticate, so access is restricted
+// here: only allow-listed emails may use the app, and each may read/write only
+// their own bookings. Everyone else is denied (the app is non-functional for
+// them and they cannot touch data or storage).
+//
+// Publish in the Firebase console (Firestore -> Rules). Put the REAL allowed
+// emails in the published rules; keep placeholders here so they are not exposed
+// in the public repo.
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isAllowedUser() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in [
+          'you@example.com'
+          // , 'friend@example.com'
+        ];
+    }
     match /users/{uid}/entries/{entryId} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read, write: if isAllowedUser() && request.auth.uid == uid;
     }
   }
 }
