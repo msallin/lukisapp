@@ -185,6 +185,18 @@ function formatTimestamp(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// Local "YYYY-MM-DD" for the date group headers in the list.
+function formatDate(iso) {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Local "HH:mm" for the per-booking row.
+function formatTime(iso) {
+  const d = new Date(iso);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function exportFilename() {
   const d = new Date();
   const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
@@ -344,23 +356,38 @@ function renderEntries(entries) {
   const list = document.getElementById("entry-list");
   list.innerHTML = "";
   document.getElementById("empty-note").style.display = sorted.length ? "none" : "block";
-  for (const entry of sorted) list.appendChild(renderEntry(entry));
+
+  // Sorted newest-first, so same-day bookings are consecutive: emit a date
+  // header whenever the day changes, then a compact one-line row per booking.
+  let currentDate = null;
+  for (const entry of sorted) {
+    const date = formatDate(entry.savedAt);
+    if (date !== currentDate) {
+      currentDate = date;
+      list.appendChild(renderDateHeader(date));
+    }
+    list.appendChild(renderEntryRow(entry));
+  }
 }
 
-function renderEntry(entry) {
+function renderDateHeader(date) {
   const li = document.createElement("li");
-  li.className = "entry";
+  li.className = "date-header";
+  li.textContent = date;
+  return li;
+}
 
-  const main = document.createElement("div");
-  main.className = "entry-main";
-  const summary = document.createElement("div");
-  summary.className = "entry-summary";
-  summary.textContent = entry.category || "—";
-  const detail = document.createElement("div");
-  detail.className = "entry-detail";
-  detail.textContent = formatTimestamp(entry.savedAt) + (entry.remark ? " · " + entry.remark : "");
-  main.appendChild(summary);
-  main.appendChild(detail);
+function renderEntryRow(entry) {
+  const li = document.createElement("li");
+  li.className = "entry-row";
+
+  const time = document.createElement("span");
+  time.className = "time";
+  time.textContent = formatTime(entry.savedAt);
+
+  const cat = document.createElement("span");
+  cat.className = "cat";
+  cat.textContent = entry.category || "—";
 
   const actions = document.createElement("div");
   actions.className = "entry-actions";
@@ -382,7 +409,8 @@ function renderEntry(entry) {
   actions.appendChild(edit);
   actions.appendChild(del);
 
-  li.appendChild(main);
+  li.appendChild(time);
+  li.appendChild(cat);
   li.appendChild(actions);
   return li;
 }
