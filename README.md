@@ -35,8 +35,9 @@ fetch the new version instead of serving the cached old one.
 
 ## CSV format
 
-Columns are `Saved at`, `Category`, `Remark`, separated by `;` with a UTF-8 BOM,
-which de-CH/de-DE Excel opens cleanly (correct encoding, one booking per row).
+Columns are `Saved at`, `Category`, `Remark`, `Created by`, separated by `;` with
+a UTF-8 BOM, which de-CH/de-DE Excel opens cleanly (correct encoding, one booking
+per row). Each booking also stores the creator's uid and email.
 
 ## Where the data lives
 

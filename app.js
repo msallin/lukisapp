@@ -164,9 +164,9 @@ function csvCell(value) {
 
 // Builds the CSV: one row per booking, columns timestamp / category / remark.
 function buildCsv(entries) {
-  const rows = [["Saved at", "Category", "Remark"]];
+  const rows = [["Saved at", "Category", "Remark", "Created by"]];
   for (const e of entries) {
-    rows.push([formatTimestamp(e.savedAt), e.category || "", e.remark || ""]);
+    rows.push([formatTimestamp(e.savedAt), e.category || "", e.remark || "", e.createdByEmail || ""]);
   }
   // Lead with a UTF-8 BOM and use CRLF line endings -- that combination is what
   // Excel opens most reliably (correct encoding and one row per line).
@@ -231,6 +231,8 @@ async function bookCategory(category) {
     savedAt: new Date().toISOString(),
     category,
     remark: remarkEl.value.trim(),
+    createdByUid: currentUser.uid,
+    createdByEmail: currentUser.email || "",
   };
   try {
     await saveEntry(currentUser.uid, entry);
